@@ -6,6 +6,7 @@ node_modules/
 dist/
 dist-ssr/
 build/
+server/uploads/
 logs/
 *.log
 .DS_Store

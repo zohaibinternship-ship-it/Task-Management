@@ -1,0 +1,321 @@
+// Task Management System — Prisma schema
+// Database: Supabase PostgreSQL
+//
+// Design notes:
+// - Roles are a real table (not just an enum) so Super Admin can view them and so the
+//   permission system below has something to attach to. Route/API authorization still
+//   primarily checks `role.name` (super_admin / admin / employee) — permissions are a
+//   secondary, finer-grained layer used for the handful of cases that need it (e.g. which
+//   audit logs an Admin may view), not wired into every single endpoint.
+// - Task workflow status (pending/in_progress/paused/completed/cancelled) is the
+//   backend-controlled state machine. "Overdue" is NOT stored as a status you can transition
+//   into — it is derived at read time from (deadline < now && status not terminal). This keeps
+//   the state machine correct (a task is still "in progress" even if it is also overdue) while
+//   still satisfying the requirement to surface overdue tasks everywhere they're listed.
+// - Task assignment history is tracked in TaskAssignment (append-only) in addition to the
+//   generic AuditLog, so "current assignee" and "assignment history" can be queried directly
+//   without parsing audit log JSON.
+// - Time tracking is derived exclusively from TaskSession rows; there is no "spent hours"
+//   column employees can write to directly.
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "windows"]
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Identity & access
+// ---------------------------------------------------------------------------
+
+enum RoleName {
+  super_admin
+  admin
+  employee
+}
+
+model Role {
+  id          Int      @id @default(autoincrement())
+  name        RoleName @unique
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  users           User[]
+  rolePermissions RolePermission[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id          Int      @id @default(autoincrement())
+  key         String   @unique
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  rolePermissions RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  id           Int      @id @default(autoincrement())
+  roleId       Int      @map("role_id")
+  permissionId Int      @map("permission_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model User {
+  id           String    @id @default(uuid())
+  name         String
+  email        String    @unique
+  passwordHash String    @map("password_hash")
+  roleId       Int       @map("role_id")
+  isActive     Boolean   @default(true) @map("is_active")
+  createdById  String?   @map("created_by_id")
+  lastLoginAt  DateTime? @map("last_login_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  role      Role  @relation(fields: [roleId], references: [id])
+  createdBy User? @relation("UserCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  createdUsers User[] @relation("UserCreatedBy")
+
+  sessions Session[]
+
+  tasksCreated     Task[]           @relation("TaskCreatedBy")
+  tasksApproved    Task[]           @relation("TaskApprovedBy")
+  assignmentsGiven TaskAssignment[] @relation("AssignmentAssignedBy")
+  assignmentsHeld  TaskAssignment[] @relation("AssignmentEmployee")
+  taskSessions     TaskSession[]
+  taskUpdates      TaskUpdate[]
+  taskAttachments  TaskAttachment[]
+  auditLogs        AuditLog[]
+
+  @@index([roleId])
+  @@map("users")
+}
+
+model Session {
+  id        String    @id @default(uuid())
+  userId    String    @map("user_id")
+  tokenHash String    @unique @map("token_hash")
+  ipAddress String?   @map("ip_address")
+  userAgent String?   @map("user_agent")
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+// ---------------------------------------------------------------------------
+// Projects & tasks
+// ---------------------------------------------------------------------------
+
+model Project {
+  id          Int      @id @default(autoincrement())
+  name        String   @unique
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  tasks Task[]
+
+  @@map("projects")
+}
+
+enum TaskPriority {
+  low
+  medium
+  high
+  critical
+}
+
+// Workflow-controlled statuses only. "Overdue" is derived, not stored — see schema header note.
+enum TaskStatus {
+  pending
+  in_progress
+  paused
+  completed
+  cancelled
+}
+
+enum QaStatus {
+  not_required
+  pending
+  in_review
+  passed
+  failed
+}
+
+enum ApprovalStatus {
+  pending
+  approved
+  rejected
+}
+
+enum CeoAuditStatus {
+  pending
+  reviewed
+  flagged
+  approved
+}
+
+model Task {
+  id          String  @id @default(uuid())
+  code        String  @unique
+  projectId   Int?    @map("project_id")
+  title       String
+  description String?
+
+  createdById String @map("created_by_id")
+
+  currentAssigneeId String? @map("current_assignee_id")
+
+  startDate       DateTime? @map("start_date")
+  expectedEndDate DateTime? @map("expected_end_date")
+  deadline        DateTime? @map("deadline")
+  expectedHours   Decimal?  @map("expected_hours") @db.Decimal(6, 2)
+
+  priority TaskPriority @default(medium)
+  status   TaskStatus   @default(pending)
+
+  // Tasksheet-derived fields
+  referenceLinks   String[] @default([]) @map("reference_links")
+  deliverableLinks String[] @default([]) @map("deliverable_links")
+
+  qaStatus QaStatus @default(not_required) @map("qa_status")
+  qaReport String?  @map("qa_report")
+
+  lineManagerApproval ApprovalStatus @default(pending) @map("line_manager_approval")
+  approvedById        String?        @map("approved_by_id")
+  approvedAt          DateTime?      @map("approved_at")
+
+  ceoAuditStatus CeoAuditStatus @default(pending) @map("ceo_audit_status")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  project    Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  createdBy  User     @relation("TaskCreatedBy", fields: [createdById], references: [id])
+  approvedBy User?    @relation("TaskApprovedBy", fields: [approvedById], references: [id], onDelete: SetNull)
+
+  assignments TaskAssignment[]
+  sessions    TaskSession[]
+  updates     TaskUpdate[]
+  attachments TaskAttachment[]
+
+  @@index([projectId])
+  @@index([status])
+  @@index([deadline])
+  @@index([currentAssigneeId])
+  @@map("tasks")
+}
+
+model TaskAssignment {
+  id           String    @id @default(uuid())
+  taskId       String    @map("task_id")
+  employeeId   String    @map("employee_id")
+  assignedById String    @map("assigned_by_id")
+  assignedAt   DateTime  @default(now()) @map("assigned_at")
+  unassignedAt DateTime? @map("unassigned_at")
+
+  task       Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  employee   User @relation("AssignmentEmployee", fields: [employeeId], references: [id])
+  assignedBy User @relation("AssignmentAssignedBy", fields: [assignedById], references: [id])
+
+  @@index([taskId])
+  @@index([employeeId])
+  @@map("task_assignments")
+}
+
+model TaskSession {
+  id              String    @id @default(uuid())
+  taskId          String    @map("task_id")
+  employeeId      String    @map("employee_id")
+  startedAt       DateTime  @default(now()) @map("started_at")
+  endedAt         DateTime? @map("ended_at")
+  durationSeconds Int?      @map("duration_seconds")
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  task     Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  employee User @relation(fields: [employeeId], references: [id])
+
+  @@index([taskId])
+  @@index([employeeId])
+  @@map("task_sessions")
+}
+
+model TaskUpdate {
+  id         String   @id @default(uuid())
+  taskId     String   @map("task_id")
+  employeeId String   @map("employee_id")
+  message    String
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  task     Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  employee User @relation(fields: [employeeId], references: [id])
+
+  @@index([taskId])
+  @@map("task_updates")
+}
+
+// Uploaded by an Admin/Super Admin (see route guard) to a task, any file type.
+// Files are stored on local disk under server/uploads/tasks/<taskId>/ — filePath stores
+// only the generated on-disk filename, never a client-supplied path, to prevent traversal.
+model TaskAttachment {
+  id           String   @id @default(uuid())
+  taskId       String   @map("task_id")
+  uploadedById String   @map("uploaded_by_id")
+  fileName     String   @map("file_name")
+  filePath     String   @map("file_path")
+  mimeType     String   @map("mime_type")
+  fileSize     Int      @map("file_size")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  task       Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  uploadedBy User @relation(fields: [uploadedById], references: [id])
+
+  @@index([taskId])
+  @@map("task_attachments")
+}
+
+// ---------------------------------------------------------------------------
+// Audit log
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  actorId    String?  @map("actor_id")
+  actorRole  String?  @map("actor_role")
+  action     String
+  entityType String   @map("entity_type")
+  entityId   String?  @map("entity_id")
+  oldValue   Json?    @map("old_value")
+  newValue   Json?    @map("new_value")
+  metadata   Json?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  actor User? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([entityType, entityId])
+  @@index([actorId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
