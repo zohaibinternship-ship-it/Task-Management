@@ -3,6 +3,7 @@ import { NavLink, Outlet } from 'react-router-dom';
 import { LogOut, Menu, X } from 'lucide-react';
 import clsx from 'clsx';
 import { useAuth } from '../hooks/useAuth.js';
+import Logo from '../components/common/Logo.jsx';
 
 export default function AppShell({ items, title }) {
   const { user, logout } = useAuth();
@@ -31,7 +32,7 @@ export default function AppShell({ items, title }) {
       >
         <div className="h-16 flex items-center justify-between gap-2 px-5 border-b border-white/10">
           <div className="flex items-center gap-2">
-            <span className="h-2.5 w-2.5 rounded-full bg-gold-400" />
+            <Logo size={26} />
             <span className="font-semibold tracking-wide">{title}</span>
           </div>
           <button

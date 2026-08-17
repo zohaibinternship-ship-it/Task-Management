@@ -5,6 +5,7 @@ import { extractErrorMessage } from '../../services/api.js';
 import Button from '../../components/common/Button.jsx';
 import FormField, { fieldClass } from '../../components/common/FormField.jsx';
 import PasswordInput from '../../components/common/PasswordInput.jsx';
+import Logo from '../../components/common/Logo.jsx';
 
 export default function Login() {
   const { user, loading, login } = useAuth();
@@ -39,8 +40,9 @@ export default function Login() {
     <div className="min-h-screen bg-navy-950 flex items-center justify-center px-4">
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
-          <div className="inline-flex h-12 w-12 items-center justify-center rounded-xl bg-gold-500 text-navy-950 font-bold text-lg mb-3">
-            TMS
+          <div className="inline-flex items-center gap-2 mb-3">
+            <Logo size={40} />
+            <span className="text-white font-bold text-lg tracking-wide">TMS</span>
           </div>
           <h1 className="text-xl font-semibold text-white">Task Management System</h1>
           <p className="text-sm text-white/50 mt-1">Sign in with the credentials your administrator gave you</p>
