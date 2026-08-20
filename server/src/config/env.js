@@ -15,7 +15,7 @@ export const env = {
   port: parseInt(process.env.PORT || '4000', 10),
   databaseUrl: required('DATABASE_URL', 'postgresql://user:password@localhost:5432/taskmanager'),
   corsOrigin: process.env.CORS_ORIGIN || 'http://localhost:5173',
-  sessionSecret: required('SESSION_SECRET', 'dev-only-insecure-secret-change-me'),
+  sessionSecret: required('SESSION_SECRET'),
   sessionTtlHours: parseInt(process.env.SESSION_TTL_HOURS || '12', 10),
   cookieName: process.env.COOKIE_NAME || 'tms_session',
   timezone: process.env.APP_TIMEZONE || 'Asia/Karachi',
